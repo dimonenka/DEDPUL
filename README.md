@@ -1,4 +1,4 @@
-# DEDPUL: method for Positive-Unlabeled Classification and Mixture Proportions Estimation
+# DEDPUL: new Method for Positive-Unlabeled Classification and Mixture Proportions Estimation based on Density Estimation
 
 
 
