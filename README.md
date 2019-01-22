@@ -1,5 +1,7 @@
 # DEDPUL
-DEDPUL: method for Positive-Unlabeled Classification and Mixture Proportions Estimation
+## DEDPUL: method for Positive-Unlabeled Classification and Mixture Proportions Estimation
+
+
 
 The repo is based on (Ivanov 2018). Here you may find implementations of DEDPUL and several other PU learning methods: EN (Elkan and Noto 2008), non-negative Risk Estimation (Kiryo et al. 2017).
 
