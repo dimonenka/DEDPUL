@@ -2,7 +2,7 @@
 
 
 
-The repo is based on (Ivanov 2018). Here you may find implementations of DEDPUL and several other PU learning methods: EN (Elkan and Noto 2008), non-negative Risk Estimation (Kiryo et al. 2017).
+The repo is based on (Ivanov 2019). Here you may find implementations of DEDPUL and several other PU learning methods: EN (Elkan and Noto 2008), non-negative Risk Estimation (Kiryo et al. 2017).
 
 Dive in PU learning, try DEDPUL and other PU Learning methods in 'sandbox_synth.ipynb'.
 
