@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from scipy.stats import norm, laplace, t
-from statsmodels.stats.multitest import multipletests
+from sklearn.metrics import accuracy_score, roc_auc_score
+# from statsmodels.stats.multitest import multipletests
 
 
 def loguniform(low=0, high=1, size=None):
@@ -16,6 +17,7 @@ def rolling_window(a, window):
     return roll_arr
 
 
+# this is a suboptimal function, works long
 def rolling_apply(a, window, fun, apply_to_all=True, **kwargs):
     if not isinstance(a, np.ndarray):
         a = np.array(a)
@@ -32,6 +34,81 @@ def rolling_apply(a, window, fun, apply_to_all=True, **kwargs):
         left = a[:window]
         right = a[-window:]
     return np.concatenate([left, fun(rolling_window(a, window * 2 + 1), **kwargs), right])
+
+
+class MonotonizingTrends:
+    def __init__(self, a=None, MT_coef=1):
+        self.counter = dict()
+        self.array_new = []
+        if a is None:
+            self.array_old = []
+        else:
+            self.add_array(a)
+        self.MT_coef = MT_coef
+
+    def add_array(self, a):
+        if isinstance(a, np.ndarray) or isinstance(a, pd.Series):
+            a = a.tolist()
+        self.array_old = a
+
+    def reset(self):
+        self.counter = dict()
+        self.array_old = []
+        self.array_new = []
+
+    def get_highest_point(self):
+        if self.counter:
+            return max(self.counter)
+        else:
+            return np.NaN
+
+    def add_point_to_counter(self, point):
+        if point not in self.counter.keys():
+            self.counter[point] = 1
+
+    def change_counter_according_to_point(self, point):
+        for key in self.counter.keys():
+            if key <= point:
+                self.counter[key] += 1
+            else:
+                self.counter[key] -= self.MT_coef
+
+    def clear_counter(self):
+        for key, value in list(self.counter.items()):
+            if value <= 0:
+                self.counter.pop(key)
+
+    def update_counter_with_point(self, point):
+        self.change_counter_according_to_point(point)
+        self.clear_counter()
+        self.add_point_to_counter(point)
+
+    def monotonize_point(self, point=None):
+        if point is None:
+            point = self.array_old.pop(0)
+        new_point = max(point, self.get_highest_point())
+        self.array_new.append(new_point)
+        self.update_counter_with_point(point)
+        return new_point
+
+    def monotonize_array(self, a=None, reset=False, decay_MT_coef=False):
+        if a is not None:
+            self.add_array(a)
+        decay_by = 0
+        if decay_MT_coef:
+            decay_by = self.MT_coef / len(a)
+
+        for _ in range(len(self.array_old)):
+            self.monotonize_point()
+            if decay_MT_coef:
+                self.MT_coef -= decay_by
+
+        if not reset:
+            return self.array_new
+        else:
+            array_new = self.array_new[:]
+            self.reset()
+            return array_new
 
 
 def reg_to_class(s):
@@ -77,7 +154,7 @@ def normalize_cols(df, columns=None):
 
 
 def generate_data(mix_size, pos_size, alpha, delta_mu=2, multiplier_s=1, distribution='normal',
-                  random_state=None):
+                  random_state=None, dim=10):
     """
     Generates pu data
     :param mix_size: total size of mixed data
@@ -98,14 +175,27 @@ def generate_data(mix_size, pos_size, alpha, delta_mu=2, multiplier_s=1, distrib
         sampler = np.random.normal
     elif distribution == 'laplace':
         sampler = np.random.laplace
+    elif distribution == 'laplace_rw':
+        def sampler(mu, s, size=1, dim=dim, random_state=random_state):
+            x = np.zeros((size, dim))
+            x[:, 0] = np.random.laplace(mu, s, size)
+            for i in range(1, dim):
+                if random_state is not None:
+                    np.random.seed(random_state + 100*i)
+                x[:, i] = x[:, i-1] + np.random.laplace(0, s, size)
+            np.random.seed(random_state)
+            return x
 
     np.random.seed(random_state)
 
-    mix_data = np.append(sampler(0, 1, int(mix_size * (1 - alpha))),
-                         sampler(delta_mu, multiplier_s, int(mix_size * alpha)))
+    mix_data = np.concatenate((sampler(0, 1, int(mix_size * (1 - alpha))),
+                               sampler(delta_mu, multiplier_s, int(mix_size * alpha))), axis=0)
     pos_data = sampler(0, 1, pos_size)
+    if distribution in {'normal', 'laplace'}:
+        mix_data = mix_data.reshape([-1, 1])
+        pos_data = pos_data.reshape([-1, 1])
 
-    data = np.append(mix_data, pos_data).reshape((-1, 1))
+    data = np.concatenate((mix_data, pos_data), axis=0)
     target_mix = np.append(np.zeros((int(mix_size * (1 - alpha)),)), np.ones((int(mix_size * alpha),)))
     target_mix = np.append(target_mix, np.full((pos_size,), 2))
 
@@ -124,6 +214,16 @@ def generate_data(mix_size, pos_size, alpha, delta_mu=2, multiplier_s=1, distrib
 
 
 def estimate_cons_alpha(dmu, ds, alpha, distribution):
+    """
+    Estimates alpha^* for limited cases of mixtures of normal and laplace distributions where either dmu=0 or ds=1;
+    f_p(x) = N(0, 1) or L(0, 1), while f_n(x) = N(mu2, s2) or L(mu2, s2), is specified with parameters
+
+    :param dmu: mu2 - mu1, float
+    :param ds: s2 / s1, float
+    :param alpha: true mixture proportions alpha, float in [0, 1]
+    :param distribution: 'normal' or 'laplace'
+    :return: ground truth proportions alpha^*, float in [0, 1]
+    """
     if distribution == 'normal':
         pdf = norm.pdf
     elif distribution == 'laplace':
@@ -142,12 +242,34 @@ def estimate_cons_alpha(dmu, ds, alpha, distribution):
     elif dmu == 0:
         cons_alpha = (1 - pm(0) / p1(0)).item()
     else:
-        raise NotImplemented('only cases where either dmu=0 or ds=1 and distribution is ' + \
-                             'either normal or laplace are implemented')
+        raise NotImplemented
     return cons_alpha
 
 
+def estimate_cons_alpha_universal(data_pos, data_mix, dens_pos, dens_mix):
+
+    data = np.concatenate((data_pos, data_mix), axis=0)
+    cons_alpha = 1-np.min(np.apply_along_axis(lambda x: dens_mix(x) / dens_pos(x), min(len(data_mix.shape)-1, 1), data))
+    return cons_alpha.item()
+
+
+def estimate_cons_poster_universal(data, dens_pos, dens_mix, cons_alpha):
+    poster = np.apply_along_axis(lambda x: (dens_mix(x) - dens_pos(x) * (1 - cons_alpha)) / dens_mix(x), -1, data)
+    poster[poster < 0] = 0
+    return poster
+
+
 def estimate_cons_poster(points, dmu, ds, distribution, alpha, cons_alpha=None):
+    """
+    Similar to estimate_cons_alpha; estimates ground-truth proportions f^*(p \mid x) that correspond to alpha^*
+    :param points: sample from one-dimensional normal or laplace distribution
+    :param dmu: mu2 - mu1, float
+    :param ds: s2 / s1, float
+    :param alpha: true mixture proportions alpha, float in [0, 1]
+    :param distribution: 'normal' or 'laplace'
+    :param cons_alpha: alpha^*; output of estimate_cons_alpha
+    :return: ground-truth proportions f^*(p \mid x) that correspond to alpha^*
+    """
     if distribution == 'normal':
         pdf = norm.pdf
     elif distribution == 'laplace':
@@ -164,19 +286,9 @@ def estimate_cons_poster(points, dmu, ds, distribution, alpha, cons_alpha=None):
     return cons_poster
 
 
-def test_significance(res, metric, est_1, est_2, group_by=None, p_value=0.05, correction='holm'):
-    if group_by is None:
-        group_by = ['dataset', 'alpha']
-    res_pivot = res.pivot_table(index=group_by + ['random_state'],
-                                columns=['estimator'],
-                                values=metric)[[est_1, est_2]]
-    res_pivot['diff'] = res_pivot[est_1] - res_pivot[est_2]
-    res_pivot.reset_index(inplace=True)
-    n = res_pivot['random_state'].nunique()
-    res_pivot = res_pivot.groupby(group_by)['diff'].agg((np.mean, np.std))
-    res_pivot['std'] *= n / (n - 1)
-    res_pivot['t-stat'] = res_pivot['mean'].abs() / res_pivot['std'] * np.sqrt(n)
-    res_pivot['p_value'] = 1 - res_pivot['t-stat'].apply(t.cdf, df=n-1)
-    if correction is not None:
-        res_pivot['p_value'] = multipletests(res_pivot['p_value'].values, alpha=p_value, method=correction)[1]
-    return res_pivot['p_value'] < p_value
+def roc_auc_loss(y_true, y_score, average='macro', sample_weight=None, max_fpr=None):
+    return -roc_auc_score(y_true, y_score, average, sample_weight, max_fpr)
+
+
+def accuracy_loss(y_true, y_pred, normalize=True, sample_weight=None):
+    return -accuracy_score(y_true, y_pred, normalize, sample_weight)

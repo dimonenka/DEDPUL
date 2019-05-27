@@ -4,18 +4,26 @@ import matplotlib.pyplot as plt
 
 import torch.optim as optim
 from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_auc_score, mean_squared_error
 from pandas import Series, DataFrame
 import torch
 
+# from keras.callbacks import EarlyStopping
+
+from catboost import CatBoostClassifier
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+
 from NN_functions import *
 from utils import *
-from tuning import *
 
 
 def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=0.0005, hid_dim=32, n_hid_layers=1,
-                      random_state=None, training_mode='standard', alpha=None, train_nn_options=None):
+                      random_state=None, training_mode='standard', alpha=None, train_nn_options=None,
+                      prevent_overfit=False):
     """
-    Estimates posterior probability of belonging to U rather than P (ignoring relative sizes of U and P);
+    Estimates posterior probability y(x) of belonging to U rather than P (ignoring relative sizes of U and P);
         predictions are the average of an ensemble of n_networks neural networks;
         performs cross-val predictions to cover the whole dataset
     :param df: features, np.array (n_instances, n_features)
@@ -26,10 +34,10 @@ def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=0.0005, hid_dim=32, n_h
     :param hid_dim: number of neurons in each hidden layer
     :param n_hid_layers: number of hidden layers in each network
     :param random_state: seed, used in data kfold split, default is None
-    :param training_mode: 'standard' for log_loss or 'nnre' for non-negative risk estimation sigmoid loss
     :param alpha: share of N in U
     :param train_nn_options: parameters for train_NN
-    :return: predicted probability of belonging to U rather than P (ignoring relative sizes of U and P)
+
+    :return: predicted probabilities y(x) of belonging to U rather than P (ignoring relative sizes of U and P)
     """
 
     if train_nn_options is None:
@@ -44,37 +52,134 @@ def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=0.0005, hid_dim=32, n_h
             train_target = target[train_index]
             mix_data = train_data[train_target == 1]
             pos_data = train_data[train_target == 0]
-
             test_data = df[test_index]
             test_target = target[test_index]
-            mix_data_test = test_data[test_target == 1]
-            pos_data_test = test_data[test_target == 0]
 
-            discriminator = get_discriminator(inp_dim=df.shape[1], out_dim=1, hid_dim=hid_dim,
-                                              n_hid_layers=n_hid_layers)
-            d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)
+            if not prevent_overfit:
+                mix_data_test = test_data[test_target == 1]
+                pos_data_test = test_data[test_target == 0]
+                discriminator = get_discriminator(inp_dim=df.shape[1], out_dim=1, hid_dim=hid_dim,
+                                                  n_hid_layers=n_hid_layers)
+                d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)
 
-            train_NN(mix_data, pos_data, discriminator, d_optimizer,
-                     mix_data_test, pos_data_test, nnre_alpha=alpha,
-                     d_scheduler=None, training_mode=training_mode, **train_nn_options)
+                train_NN(mix_data, pos_data, discriminator, d_optimizer,
+                         mix_data_test, pos_data_test, nnre_alpha=alpha,
+                         d_scheduler=None, training_mode=training_mode, **train_nn_options)
+                preds[i, test_index] = discriminator(
+                    torch.as_tensor(test_data, dtype=torch.float32)).detach().numpy().flatten()
 
-            preds[i, test_index] = discriminator(
-                torch.as_tensor(test_data, dtype=torch.float32)).detach().numpy().flatten()
+            else:
+                thr = int(test_data.shape[0]//2)
+                test_data_1 = test_data[:thr]
+                test_data_2 = test_data[thr:]
+                test_target_1 = test_target[:thr]
+                test_target_2 = test_target[thr:]
+                test_index_1 = test_index[:thr]
+                test_index_2 = test_index[thr:]
+                mix_data_test_1 = test_data_1[test_target_1 == 1]
+                mix_data_test_2 = test_data_2[test_target_2 == 1]
+                pos_data_test_1 = test_data_1[test_target_1 == 0]
+                pos_data_test_2 = test_data_2[test_target_2 == 0]
+
+                discriminator = get_discriminator(inp_dim=df.shape[1], out_dim=1, hid_dim=hid_dim,
+                                                  n_hid_layers=n_hid_layers)
+                d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)
+
+                train_NN(mix_data, pos_data, discriminator, d_optimizer,
+                         mix_data_test_1, pos_data_test_1, nnre_alpha=alpha,
+                         d_scheduler=None, training_mode=training_mode, **train_nn_options)
+
+                preds[i, test_index_2] = discriminator(
+                    torch.as_tensor(test_data_2, dtype=torch.float32)).detach().numpy().flatten()
+
+
+                discriminator = get_discriminator(inp_dim=df.shape[1], out_dim=1, hid_dim=hid_dim,
+                                                  n_hid_layers=n_hid_layers)
+                d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)
+
+                train_NN(mix_data, pos_data, discriminator, d_optimizer,
+                         mix_data_test_2, pos_data_test_2, nnre_alpha=alpha,
+                         d_scheduler=None, training_mode=training_mode, **train_nn_options)
+
+                preds[i, test_index_1] = discriminator(
+                    torch.as_tensor(test_data_1, dtype=torch.float32)).detach().numpy().flatten()
+
         if random_state is not None:
             random_state += 1
     preds = preds.mean(axis=0)
-
+    # preds = np.median(preds, axis=0)
     return preds
 
 
-def estimate_diff(preds, target, bw_mix=0.05, bw_pos=0.15, kde_mode='logit', monotonicity=0.55, k_neighbours=None,
-                  tune=True, tune_diff_options=None):
+# def estimate_preds_cv_keras(data, target, n_networks=1, n_layers=1, n_hid=32, lr=10**-5, random_state=42,
+    #                         cv=3, batch_size=128, n_epochs=500, n_early_stop=10, alpha=None, verbose=False):
+    # es = EarlyStopping(monitor='val_loss', patience=n_early_stop, verbose=0, restore_best_weights=True)
+    # preds = np.zeros((n_networks, data.shape[0]))
+    # for i in range(n_networks):
+    #     kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+    #     for train_idx, test_idx in kf.split(data, target):
+    #         clf = init_keras_model(n_layers=n_layers, n_hid=n_hid, lr=lr)
+    #         clf.fit(data[train_idx], target[train_idx],
+    #                 validation_data=(data[test_idx], target[test_idx]),
+    #                 class_weight={0: target.mean(), 1: 1 - target.mean()},
+    #                 batch_size=batch_size, epochs=n_epochs, callbacks=[es], verbose=verbose)
+    #         preds[i, test_idx] = clf.predict_proba(data[test_idx]).reshape(-1,)
+    #     if random_state is not None:
+    #         random_state += 1
+    # preds = preds.mean(axis=0)
+    # # preds = np.median(preds, axis=0)
+    # return preds
+
+
+def estimate_preds_cv_catboost(data, target, random_state=None, n_networks=1, catboost_params=None,
+                               cv=3, n_early_stop=10, alpha=None, verbose=False):
+    if catboost_params is None:
+        catboost_params = {}
+    preds = np.zeros((n_networks, data.shape[0]))
+    for i in range(n_networks):
+        kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+        for train_idx, test_idx in kf.split(data, target):
+            clf = CatBoostClassifier(**catboost_params,
+                                     class_weights=(target.mean(), 1 - target.mean()), random_seed=random_state)
+            clf.fit(data[train_idx], target[train_idx],
+                    eval_set=(data[test_idx], target[test_idx]),
+                    use_best_model=True, verbose=verbose, early_stopping_rounds=n_early_stop)
+            preds[i, test_idx] = clf.predict_proba(data[test_idx])[:, 1]
+        if random_state is not None:
+            random_state += 1
+    preds = preds.mean(axis=0)
+    # preds = np.median(preds, axis=0)
+    return preds
+
+
+def estimate_preds_cv_sklearn(data, target, model, random_state=None, n_networks=1, params=None, cv=3):
+    if params is None:
+        params = {}
+    preds = np.zeros((n_networks, data.shape[0]))
+#     w = np.zeros(target.shape)
+#     w[target == 0] = target.mean()
+#     w[target == 1] = 1 - target.mean()
+    for i in range(n_networks):
+        kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+        for train_idx, test_idx in kf.split(data, target):
+            clf = model(**params, class_weight={0: target.mean(), 1: 1 - target.mean()}, random_state=random_state)
+            clf.fit(data[train_idx], target[train_idx])#, sample_weight=w[train_idx])
+            preds[i, test_idx] = clf.predict_proba(data[test_idx])[:, 1]
+        if random_state is not None:
+            random_state += 1
+    preds = preds.mean(axis=0)
+    # preds = np.median(preds, axis=0)
+    return preds
+
+
+def estimate_diff(preds, target, bw_mix=0.05, bw_pos=0.1, kde_mode='logit', threshold=None, k_neighbours=None,
+                  k_neighbours2=5, MT=True, MT_coef=0.2, decay_MT_coef=False, return_all=False):
     """
-    Estimates densities of predictions for P and U and difference (ratio) between them f_p / f_u for U sample;
+    Estimates densities of predictions y(x) for P and U and ratio between them f_p / f_u for U sample;
         uses kernel density estimation (kde);
-        post-processes difference of estimated densities - imposes monotonicity on lower preds and
-        (so that diff is partly non-decreasing) and applies rolling median to r§educe variance
-    :param preds: predictions of classifier, probability of belonging to U rather than P, np.array with shape (n,)
+        post-processes difference of estimated densities - imposes monotonicity on lower preds
+        (so that diff is partly non-decreasing) and applies rolling median to further reduce variance
+    :param preds: predictions of NTC y(x), probability of belonging to U rather than P, np.array with shape (n,)
     :param target: binary vector, 0 if positive, 1 if unlabeled, np.array with shape (n,)
     :param bw_mix: bandwidth for kde of U
     :param bw_pos: bandwidth for kde of P
@@ -82,17 +187,22 @@ def estimate_diff(preds, target, bw_mix=0.05, bw_pos=0.15, kde_mode='logit', mon
     :param monotonicity: monotonicity is imposed on density difference for predictions below this number, float in [0, 1]
     :param k_neighbours: difference is relaxed with median rolling window with size k_neighbours * 2 + 1,
         default = int(preds[target == 1].shape[0] // 10)
+
     :return: difference of densities f_p / f_u for U sample
     """
 
     if kde_mode is None:
         kde_mode = 'logit'
 
-    if k_neighbours is None:
-        k_neighbours = int(preds[target == 1].shape[0] // 10)
+    if (threshold is None) or (threshold == 'mid'):
+        threshold = preds[target == 1].mean() / 2 + preds[target == 0].mean() / 2
+    elif threshold == 'low':
+        threshold = preds[target == 0].mean()
+    elif threshold == 'high':
+        threshold = preds[target == 1].mean()
 
-    if tune_diff_options is None:
-        tune_diff_options = {}
+    if k_neighbours is None:
+        k_neighbours = int(preds[target == 1].shape[0] // 20)
 
     if kde_mode == 'prob':
         kde_inner_fun = lambda x: x
@@ -104,46 +214,90 @@ def estimate_diff(preds, target, bw_mix=0.05, bw_pos=0.15, kde_mode='logit', mon
         kde_inner_fun = lambda x: np.log(x / (1 - x + 10 ** -5))
         kde_outer_fun = lambda dens, x: dens(np.log(x / (1 - x + 10 ** -5))) / (x * (1 - x) + 10 ** -5)
 
-    if tune:
-        bw_mix, bw_pos, monotonicity, k_neighbours = tune_diff(preds, target, kde_inner_fun, kde_outer_fun,
-                                                 bw_mix_default=bw_mix, bw_pos_default=bw_pos,
-												 k_neighbours_default=k_neighbours,
-                                                 threshold_default=monotonicity, **tune_diff_options)
-
     kde_mix = gaussian_kde(np.apply_along_axis(kde_inner_fun, 0, preds[target == 1]), bw_mix)
     kde_pos = gaussian_kde(np.apply_along_axis(kde_inner_fun, 0, preds[target == 0]), bw_pos)
 
     # sorting to relax and impose monotonicity
-    sorted_mixed = np.sort(preds[target == 1])
+    if return_all:
+        sorted_mixed = np.sort(preds)
+    else:
+        sorted_mixed = np.sort(preds[target == 1])
 
     diff = np.apply_along_axis(lambda x: kde_outer_fun(kde_pos, x) / (kde_outer_fun(kde_mix, x) + 10 ** -10), axis=0,
                                arr=sorted_mixed)
-    diff = rolling_apply(diff, 5, np.median, axis=-1)
+    diff[diff > 50] = 50
+    diff = np.apply_along_axis(np.median, -1, rolling_window(diff, k_neighbours2))
+    diff = np.concatenate((np.full((int(k_neighbours2//2),), diff[0]), diff, np.full((int(k_neighbours2//2),), diff[-1])))
     diff = np.append(
-        np.flip(np.maximum.accumulate(np.flip(diff[sorted_mixed <= monotonicity], axis=0)), axis=0),
-        diff[sorted_mixed > monotonicity])
+        np.flip(np.maximum.accumulate(np.flip(diff[sorted_mixed <= threshold], axis=0)), axis=0),
+        diff[sorted_mixed > threshold])
     diff = rolling_apply(diff, k_neighbours, np.median, axis=-1)
 
+    if MT:
+        MTrends = MonotonizingTrends(MT_coef=MT_coef)
+        diff = np.flip(np.array(MTrends.monotonize_array(np.flip(diff), reset=True, decay_MT_coef=decay_MT_coef)))
+
+    diff.sort()
+    diff = np.flip(diff)
+
     # desorting
-    diff = diff[np.argsort(np.argsort(preds[target == 1]))]
+    if return_all:
+        diff = diff[np.argsort(np.argsort(preds))]
+    else:
+        diff = diff[np.argsort(np.argsort(preds[target == 1]))]
 
     return diff
 
 
-def estimate_poster_dedpul(diff, alpha=None, quantile=0.05, **kwargs):
+def estimate_poster_dedpul(diff, alpha=None, quantile=0.05, alpha_as_mean_poster=False, max_it=100, **kwargs):
     """
     Estimates posteriors and priors alpha (if not provided) of N in U with dedpul method
     :param diff: difference of densities f_p / f_u for the sample U, np.array (n,), output of estimate_diff()
     :param alpha: priors, share of N in U (estimated if None)
     :param quantile: if alpha is None, relaxation of the estimate of alpha;
+        here alpha is estimaeted as infinum, and low quantile is its relaxed version;
         share of posteriors probabilities that we allow to be negative (with the following zeroing-out)
     :param kwargs: dummy
+
     :return: tuple (alpha, poster), e.g. (priors, posteriors) of N in U for the U sample, represented by diff
     """
-    if alpha is None:
-        alpha = 1 - 1 / max(np.quantile(diff, 1 - quantile, interpolation='higher'), 1)
-    poster = 1 - diff * (1 - alpha)
-    poster[poster < 0] = 0
+    if alpha_as_mean_poster and (alpha is not None):
+        poster = 1 - diff * (1 - alpha)
+        poster[poster < 0] = 0
+        cur_alpha = np.mean(poster)
+        if cur_alpha < alpha:
+            left_border = alpha
+            right_border = 1
+        else:
+            left_border = 0
+            right_border = alpha
+
+            poster_zero = 1 - diff
+            poster_zero[poster_zero < 0] = 0
+            if np.mean(poster_zero) > alpha:
+                left_border = -50
+                right_border = 0
+                # return 0, poster_zero
+        it = 0
+        try_alpha = cur_alpha
+        while (abs(cur_alpha - alpha) > kwargs.get('tol', 10**-5)) and (it < max_it):
+            try_alpha = (left_border + (right_border - left_border) / 2)
+            poster = 1 - diff * (1 - try_alpha)
+            poster[poster < 0] = 0
+            cur_alpha = np.mean(poster)
+            if cur_alpha > alpha:
+                right_border = try_alpha
+            else:
+                left_border = try_alpha
+            it += 1
+        alpha = try_alpha
+        if it >= max_it:
+            print('Exceeded maximal number of iterations in finding mean_poster=alpha')
+    else:
+        if alpha is None:
+            alpha = 1 - 1 / max(np.quantile(diff, 1 - quantile, interpolation='higher'), 1)
+        poster = 1 - diff * (1 - alpha)
+        poster[poster < 0] = 0
     return alpha, poster
 
 
@@ -172,13 +326,13 @@ def estimate_poster_en(preds, target, alpha=None, estimator='e1', quantile=0.05,
     return alpha, poster
 
 
-def estimate_poster_em(diff=None, preds=None, target=None, mode='dedpul', converge=True, tol=10 ** -5,
-                       max_iterations=1000, nonconverge=True, step=0.001,
-                       max_diff=0.05, plot=False, disp=True, alpha=None, **kwargs):
+def estimate_poster_em(diff=None, preds=None, target=None, mode='dedpul', converge=True, tol=10**-5,
+                       max_iterations=1000, nonconverge=True, step=0.001, max_diff=0.05, plot=False, disp=False,
+                       alpha=None, alpha_as_mean_poster=True, **kwargs):
     """
     Performs Expectation-Maximization to estimate posteriors and priors alpha (if not provided) of N in U
         with either of 'en' or 'dedpul' methods; both 'converge' and 'nonconverge' are recommended to be set True for
-        good estimate
+        better estimate
     :param diff: difference of densities f_p/f_u for the sample U, np.array (n,), output of estimate_diff()
     :param preds: predictions of classifier, np.array with shape (n,)
     :param target: binary vector, 0 if positive, 1 if unlabeled, np.array with shape (n,)
@@ -193,63 +347,64 @@ def estimate_poster_em(diff=None, preds=None, target=None, mode='dedpul', conver
     :param plot: True or False, if True - plots ([0, 1, grid], mean posteriors - alpha) and
         ([0, 1, grid], second lag of (mean posteriors - alpha))
     :param disp: True or False, if True - displays if the algorithm didn't converge
+    :param alpha: proportions of N in U; is estimated if None
     :return: tuple (alpha, poster), e.g. (priors, posteriors) of N in U for the U sample
     """
     assert converge + nonconverge, "At least one of 'converge' and 'nonconverge' has to be set to 'True'"
 
     if alpha is not None:
         if mode == 'dedpul':
-            _, poster = estimate_poster_dedpul(diff, alpha=alpha, **kwargs)
+            alpha, poster = estimate_poster_dedpul(diff, alpha=alpha, alpha_as_mean_poster=alpha_as_mean_poster, tol=tol, **kwargs)
         elif mode == 'en':
             _, poster = estimate_poster_en(preds, target, alpha=alpha, **kwargs)
         return alpha, poster
 
-    if converge:
-        alpha_converge = 0
-        for i in range(max_iterations):
+    # if converge:
+    alpha_converge = 0
+    for i in range(max_iterations):
 
-            if mode == 'dedpul':
-                _, poster_converge = estimate_poster_dedpul(diff, alpha=alpha_converge, **kwargs)
-            elif mode == 'en':
-                _, poster_converge = estimate_poster_en(preds, target, alpha=alpha_converge, **kwargs)
+        if mode == 'dedpul':
+            _, poster_converge = estimate_poster_dedpul(diff, alpha=alpha_converge, **kwargs)
+        elif mode == 'en':
+            _, poster_converge = estimate_poster_en(preds, target, alpha=alpha_converge, **kwargs)
 
-            mean_poster = np.mean(poster_converge)
-            error = mean_poster - alpha_converge
+        mean_poster = np.mean(poster_converge)
+        error = mean_poster - alpha_converge
 
-            if np.abs(error) < tol:
-                break
-            if np.min(poster_converge) > 0:
-                break
-            alpha_converge = mean_poster
+        if np.abs(error) < tol:
+            break
+        if np.min(poster_converge) > 0:
+            break
+        alpha_converge = mean_poster
 
-        if disp:
-            if i >= max_iterations - 1:
-                print('max iterations exceeded')
+    if disp:
+        if i >= max_iterations - 1:
+            print('max iterations exceeded')
 
-    if nonconverge:
+    # if nonconverge:
 
-        errors = np.array([])
-        for alpha_nonconverge in np.arange(0, 1, step):
+    errors = np.array([])
+    for alpha_nonconverge in np.arange(0, 1, step):
 
-            if mode == 'dedpul':
-                _, poster_nonconverge = estimate_poster_dedpul(diff, alpha=alpha_nonconverge, **kwargs)
-            elif mode == 'en':
-                _, poster_nonconverge = estimate_poster_en(preds, target, alpha=alpha_nonconverge, **kwargs)
-            errors = np.append(errors, np.mean(poster_nonconverge) - alpha_nonconverge)
+        if mode == 'dedpul':
+            _, poster_nonconverge = estimate_poster_dedpul(diff, alpha=alpha_nonconverge, **kwargs)
+        elif mode == 'en':
+            _, poster_nonconverge = estimate_poster_en(preds, target, alpha=alpha_nonconverge, **kwargs)
+        errors = np.append(errors, np.mean(poster_nonconverge) - alpha_nonconverge)
 
-        idx = np.argmax(np.diff(np.diff(errors))[errors[1: -1] < max_diff])
-        alpha_nonconverge = np.arange(0, 1, step)[1: -1][errors[1: -1] < max_diff][idx]
+    idx = np.argmax(np.diff(np.diff(errors))[errors[1: -1] < max_diff])
+    alpha_nonconverge = np.arange(0, 1, step)[1: -1][errors[1: -1] < max_diff][idx]
 
-        if plot:
-            fig, axs = plt.subplots(2, 1, sharex=False, sharey=False, figsize=(6, 10))
-            axs[0].plot(np.arange(0, 1, step), errors)
-            axs[1].plot(np.arange(0, 1, step)[1: -1], np.diff(np.diff(errors)))
+    if plot:
+        fig, axs = plt.subplots(2, 1, sharex=False, sharey=False, figsize=(6, 10))
+        axs[0].plot(np.arange(0, 1, step), errors)
+        axs[1].plot(np.arange(0, 1, step)[1: -1], np.diff(np.diff(errors)))
 
-    if converge and not nonconverge:
-        return alpha_converge, poster_converge
+    # if converge and not nonconverge:
+    #     return alpha_converge, poster_converge
 
-    elif converge and nonconverge and ((alpha_nonconverge >= alpha_converge) or
-                                       (((errors < 0).sum() > 1) and (alpha_converge < 1 - step))):
+    if ((alpha_nonconverge >= alpha_converge) or#converge and nonconverge and
+        (((errors < 0).sum() > 1) and (alpha_converge < 1 - step))):
         return alpha_converge, poster_converge
 
     elif nonconverge:
@@ -261,19 +416,23 @@ def estimate_poster_em(diff=None, preds=None, target=None, mode='dedpul', conver
         if disp:
             print('didn\'t converge')
         return alpha_nonconverge, poster_nonconverge
+        # return np.mean(poster_nonconverge), poster_nonconverge
 
     else:
+        if disp:
+            print('didn\'t converge')
         return None, None
 
 
 def estimate_poster_cv(df, target, estimator='dedpul', alpha=None, estimate_poster_options=None,
-                       estimate_diff_options=None, estimate_preds_cv_options=None, train_nn_options=None):
+                       estimate_diff_options=None, estimate_preds_cv_options=None):
     """
     Estimates posteriors and priors alpha (if not provided) of N in U; f_u(x) = (1 - alpha) * f_p(x) + alpha * f_n(x)
     :param df: features, np.array (n_instances, n_features)
     :param target: binary vector, 0 if positive, 1 if unlabeled, np.array with shape (n,)
-    :param estimator: 'dedpul', 'baseline_dedpul', 'en', 'em_en', 'nnre', or 'ntc_methods' for everything but 'nnre'
-    :param alpha: share of N in U
+    :param estimator: 'dedpul', 'baseline_dedpul', 'en', 'em_en', or 'nnre';
+        'ntc_methods' for every estimate but 'nnre'
+    :param alpha: share of N in U; is estimated if not provided (nnRE requires it to be provided)
     :param estimate_poster_options: parameters for estimate_poster... functions
     :param estimate_diff_options: parameters for estimate_diff
     :param estimate_preds_cv_options: parameters for estimate_preds_cv
@@ -289,14 +448,6 @@ def estimate_poster_cv(df, target, estimator='dedpul', alpha=None, estimate_post
     if isinstance(target, Series):
         target = target.values
 
-    if estimator == 'nnre':
-        training_mode = 'nnre'
-    else:
-        training_mode = 'standard'
-
-    if train_nn_options is None:
-        train_nn_options = dict()
-
     if estimate_poster_options is None:
         estimate_poster_options = dict()
 
@@ -306,21 +457,21 @@ def estimate_poster_cv(df, target, estimator='dedpul', alpha=None, estimate_post
     if estimate_preds_cv_options is None:
         estimate_preds_cv_options = dict()
 
-    preds = estimate_preds_cv(df=df, target=target, alpha=alpha, training_mode=training_mode,
-                              train_nn_options=train_nn_options, **estimate_preds_cv_options)
+    metric = 0
+    for dct in estimate_preds_cv_options.values():
+        fun = dct.pop('fun')
+        cur_preds = fun(df, target, **dct)
+        # hardcoded to choose an NTC with best roc_auc, which does not always increase final performance
+        cur_metric = roc_auc_score(target, cur_preds).item()
+        if cur_metric >= metric:
+            preds = cur_preds.copy()
+            metric = cur_metric
 
     if estimator in {'dedpul', 'baseline_dedpul', 'ntc_methods'}:
         diff = estimate_diff(preds, target, **estimate_diff_options)
-    if estimator in {'random_dedpul', 'ntc_methods'}:
-        estimate_diff_options['tune_diff_options'] = estimate_diff_options.get('tune_diff_options', dict())
-        estimate_diff_options['tune_diff_options']['choose_randomly'] = True
-        diff_random = estimate_diff(preds, target, **estimate_diff_options)
 
     if estimator == 'dedpul':
         alpha, poster = estimate_poster_em(diff=diff, mode='dedpul', alpha=alpha, **estimate_poster_options)
-
-    elif estimator == 'random_dedpul':
-        alpha, poster = estimate_poster_em(diff=diff_random, mode='dedpul', alpha=alpha, **estimate_poster_options)
 
     elif estimator == 'baseline_dedpul':
         alpha, poster = estimate_poster_dedpul(diff=diff, alpha=alpha, **estimate_poster_options)
@@ -336,9 +487,7 @@ def estimate_poster_cv(df, target, estimator='dedpul', alpha=None, estimate_post
 
     elif estimator == 'ntc_methods':
         res = dict()
-        # roc_auc heuristic
         res['dedpul'] = estimate_poster_em(diff=diff, mode='dedpul', alpha=alpha, **estimate_poster_options)
-        res['random_dedpul'] = estimate_poster_em(diff=diff_random, mode='dedpul', alpha=alpha, **estimate_poster_options)
         res['baseline_dedpul'] = estimate_poster_dedpul(diff=diff, alpha=alpha, **estimate_poster_options)
         res['e1_en'] = estimate_poster_en(preds, target, alpha=alpha, estimator='e1', **estimate_poster_options)
         res['e3_en'] = estimate_poster_en(preds, target, alpha=alpha, estimator='e3', **estimate_poster_options)
