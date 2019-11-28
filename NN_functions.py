@@ -65,39 +65,29 @@ def get_discriminator(inp_dim, out_dim=1, hid_dim=32, n_hid_layers=1, bayes=Fals
     return Net(inp_dim, out_dim, hid_dim, n_hid_layers, bayes)
 
 
-def all_convolution(inp_dim=(32, 32, 3), out_dim=1, hid_dim_full=128):
+def all_convolution(inp_dim=(32, 32, 3), out_dim=1, hid_dim_full=128, bayes=False):
 
     class Net(nn.Module):
-        def __init__(self, inp_dim=(32, 32, 3), out_dim=1, hid_dim_full=128):
+        def __init__(self, inp_dim=(32, 32, 3), out_dim=1, hid_dim_full=128, bayes=False):
             super(Net, self).__init__()
-            # self.conv1 = nn.Conv2d(3, 96, 3, padding=1)
-            # self.conv2 = nn.Conv2d(96, 96, 3, padding=1)
-            # self.conv3 = nn.Conv2d(96, 96, 3, padding=1, stride=2)
-            # self.conv4 = nn.Conv2d(96, 192, 3, padding=1)
-            # self.conv5 = nn.Conv2d(192, 192, 3, padding=1)
-            # self.conv6 = nn.Conv2d(192, 192, 3, padding=1, stride=2)
-            # self.conv7 = nn.Conv2d(192, 192, 3, padding=1)
-            # self.conv8 = nn.Conv2d(192, 192, 1)
-            # self.conv9 = nn.Conv2d(192, 10, 1)
+            self.bayes = bayes
 
             self.conv1 = nn.Conv2d(3, 16, 5, padding=2)
-            # self.bn1 = nn.BatchNorm2d(32)
             self.conv2 = nn.Conv2d(16, 16, 3, padding=1, stride=2)
-            # self.bn2 = nn.BatchNorm2d(32)
             self.conv3 = nn.Conv2d(16, 32, 5, padding=2)
-            # self.bn3 = nn.BatchNorm2d(64)
             self.conv4 = nn.Conv2d(32, 32, 3, padding=1, stride=2)
-            # self.bn4 = nn.BatchNorm2d(64)
             self.conv5 = nn.Conv2d(32, 32, 1)
-            # self.bn5 = nn.BatchNorm2d(64)
             self.conv6 = nn.Conv2d(32, 4, 1)
-            # self.bn6 = nn.BatchNorm2d(8)
 
             self.conv_to_fc = 8*8*4
             self.fc1 = nn.Linear(self.conv_to_fc, hid_dim_full)
-            self.fc2 = nn.Linear(hid_dim_full, out_dim)
+            if self.bayes:
+                self.out_mean = nn.Linear(hid_dim_full, out_dim)
+                self.out_logvar = nn.Linear(hid_dim_full, out_dim)
+            else:
+                self.out = nn.Linear(hid_dim_full, out_dim)
 
-        def forward(self, x):
+        def forward(self, x, return_params=False, sample_noise=False):
             x = F.relu(self.conv1(x))
             x = F.relu(self.conv2(x))
             x = F.relu(self.conv3(x))
@@ -105,41 +95,28 @@ def all_convolution(inp_dim=(32, 32, 3), out_dim=1, hid_dim_full=128):
             x = F.relu(self.conv5(x))
             x = F.relu(self.conv6(x))
 
-            # x = self.bn1(F.relu(self.conv1(x)))
-            # x = self.bn2(F.relu(self.conv2(x)))
-            # x = self.bn3(F.relu(self.conv3(x)))
-            # x = self.bn4(F.relu(self.conv4(x)))
-            # x = self.bn5(F.relu(self.conv5(x)))
-            # x = self.bn6(F.relu(self.conv6(x)))
-
-            # x = F.relu(self.conv7(x))
-            # x = F.relu(self.conv8(x))
-            # x = F.relu(self.conv9(x))
             x = x.view(-1, self.conv_to_fc)
             x = F.relu(self.fc1(x))
-            x = F.sigmoid(self.fc2(x))
-            return x
 
-    # class Net(nn.Module):
-    #     def __init__(self):
-    #         super(Net, self).__init__()
-    #         self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
-    #         self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
-    #         self.conv2_drop = nn.Dropout2d()
-    #         self.fc1 = nn.Linear(320, 50)
-    #         self.fc2 = nn.Linear(50, 1)
-    #
-    #     def forward(self, x):
-    #         x = F.relu(F.max_pool2d(self.conv1(x), 2))
-    #         x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
-    #         x = x.view(-1, 320)
-    #         x = F.relu(self.fc1(x))
-    #         x = F.dropout(x, training=self.training)
-    #         x = self.fc2(x)
-    #         return F.sigmoid(x)
-    # return Net()
+            if self.bayes:
+                mean, logvar = self.out_mean(x), self.out_logvar(x)
+                var = torch.exp(logvar * .5)
+                if sample_noise:
+                    x = mean + var * torch.randn_like(var)
+                else:
+                    x = mean
+            else:
+                mean = self.out(x)
+                var = torch.zeros_like(mean) + 1e-3
+                x = mean
+            p = F.sigmoid(x)
 
-    return Net(inp_dim, out_dim, hid_dim_full)
+            if return_params:
+                return p, mean, var
+            else:
+                return p
+
+    return Net(inp_dim, out_dim, hid_dim_full, bayes=bayes)
 
 
 def d_loss_standard(batch_mix, batch_pos, discriminator, loss_function=None):
