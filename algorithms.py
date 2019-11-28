@@ -60,7 +60,7 @@ def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=1e-4, hid_dim=32, n_hid
                 discriminator = get_discriminator(inp_dim=df.shape[1], out_dim=1, hid_dim=hid_dim,
                                                   n_hid_layers=n_hid_layers, bayes=bayes)
             else:
-                discriminator = all_convolution(hid_dim_full=hid_dim)
+                discriminator = all_convolution(hid_dim_full=hid_dim, bayes=bayes)
             d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)#, weight_decay=10**-5)
 
             train_NN(mix_data, pos_data, discriminator, d_optimizer,
