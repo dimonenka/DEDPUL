@@ -1,39 +1,92 @@
 import numpy as np
+from sklearn.model_selection import KFold
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from scipy.stats import norm, laplace, t
 from sklearn.metrics import accuracy_score, roc_auc_score
+from scipy.stats import gaussian_kde
+from sklearn.mixture import GaussianMixture
 # from statsmodels.stats.multitest import multipletests
+
+
+class GaussianMixtureNoFit(GaussianMixture):
+    def __init__(self, n_components=1, covariance_type='full', tol=1e-3,
+                 reg_covar=1e-6, max_iter=100, n_init=1, init_params='kmeans',
+                 weights_init=None, means_init=None, precisions_init=None,
+                 random_state=None, warm_start=False,
+                 verbose=0, verbose_interval=10):
+        super().__init__(n_components, covariance_type, tol,
+                         reg_covar, max_iter, n_init, init_params,
+                         weights_init, means_init, precisions_init,
+                         random_state, warm_start,
+                         verbose, verbose_interval)
+
+        self.weights = weights_init
+        self.means = means_init
+        self.precisions = precisions_init
+        self.weights_ = weights_init
+        self.means_ = means_init
+        self.precisions_ = precisions_init
+        self.precisions_cholesky_ = self.precisions_init
+        self.covariances_ = 1 / (self.precisions ** 2)
+        self.covariances = 1 / (self.precisions ** 2)
+
+    def _initialize(self, X, resp):
+        pass
+
+    def _m_step(self, X, log_resp):
+        pass
 
 
 def loguniform(low=0, high=1, size=None):
     return np.exp(np.random.uniform(low, high, size))
 
 
-def rolling_window(a, window):
-    shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
-    strides = a.strides + (a.strides[-1],)
-    roll_arr = np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
-    return roll_arr
+def rolling_apply(diff, k_neighbours):
+    s = pd.Series(diff)
+    s = np.concatenate((
+                        s.iloc[:2*k_neighbours].expanding(center=False).median()[::2].values,
+                        s.rolling(k_neighbours*2+1, center=True).median().dropna().values,
+                        np.flip(np.flip(s.iloc[-2*k_neighbours:], axis=0).expanding(center=False).median()[::2], axis=0).values
+    ))
+    return s
 
 
-# this is a suboptimal function, works long
-def rolling_apply(a, window, fun, apply_to_all=True, **kwargs):
-    if not isinstance(a, np.ndarray):
-        a = np.array(a)
-    assert a.shape[0] >= window * 2, 'window is too big'
+def compute_log_likelihood(preds, kde, kde_outer_fun=lambda kde, x: kde(x)):
+    likelihood = np.apply_along_axis(lambda x: kde_outer_fun(kde, x), 0, preds)
+    return np.log(likelihood).mean()
 
-    if apply_to_all:
-        left = np.array([0.] * window)
-        right = np.array([0.] * window)
-        for i in range(window):
-            left[i] = fun(a[: 2 * i + 1], **kwargs)
-            right[-i - 1] = fun(a[-2 * i - 1:], **kwargs)
 
-    else:
-        left = a[:window]
-        right = a[-window:]
-    return np.concatenate([left, fun(rolling_window(a, window * 2 + 1), **kwargs), right])
+def maximize_log_likelihood(preds, kde_inner_fun, kde_outer_fun, n_folds=5, kde_type='kde', bw_low=0.01, bw_high=0.4,
+                            n_gauss_low=1, n_gauss_high=50, bins_low=20, bins_high=250, n_steps=25):
+    kf = KFold(n_folds, shuffle=True)
+    idx_best, like_best = 0, 0
+    bws = np.exp(np.linspace(np.log(bw_low), np.log(bw_high), n_steps))
+    n_gauss = np.linspace(n_gauss_low, n_gauss_high, n_steps).astype(int)
+    bins = np.linspace(bins_low, bins_high, n_steps).astype(int)
+    for idx, (bw, n_g, bin) in enumerate(zip(bws, n_gauss, bins)):
+        like = 0
+        for train_idx, test_idx in kf.split(preds):
+            if kde_type == 'kde':
+                kde = gaussian_kde(np.apply_along_axis(kde_inner_fun, 0, preds[train_idx]), bw)
+            elif kde_type == 'GMM':
+                GMM = GaussianMixture(n_g, covariance_type='spherical').fit(
+                    np.apply_along_axis(kde_inner_fun, 0, preds[train_idx]).reshape(-1, 1))
+                kde = lambda x: np.exp(GMM.score_samples(x.reshape(-1, 1)))
+            elif kde_type == 'hist':
+                bars = np.histogram(preds[train_idx], bins=bin, range=(0, 1), density=True)[0]
+                kde = lambda x: bars[np.clip((x // (1 / bin)).astype(int), 0, bin - 1)]
+                kde_outer_fun = lambda kde, x: kde(x)
+
+            like += compute_log_likelihood(preds[test_idx], kde, kde_outer_fun)
+        if like > like_best:
+            like_best, idx_best = like, idx
+    if kde_type == 'kde':
+        return bws[idx_best]
+    elif kde_type == 'GMM':
+        return n_gauss[idx_best]
+    elif kde_type == 'hist':
+        return bins[idx_best]
 
 
 class MonotonizingTrends:
@@ -140,9 +193,9 @@ def normalize_col(s):
     std = s.std()
     mean = s.mean()
     if std > 0:
-        return (s - s.mean()) / s.std()
+        return (s - mean) / std
     else:
-        return s - s.mean()
+        return s - mean
 
 
 def normalize_cols(df, columns=None):
@@ -291,4 +344,4 @@ def roc_auc_loss(y_true, y_score, average='macro', sample_weight=None, max_fpr=N
 
 
 def accuracy_loss(y_true, y_pred, normalize=True, sample_weight=None):
-    return -accuracy_score(y_true, y_pred, normalize, sample_weight)
+    return -accuracy_score(y_true, y_pred.round().astype(int), normalize, sample_weight)

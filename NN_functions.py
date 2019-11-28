@@ -1,17 +1,15 @@
 import torch.nn as nn
-import torch.optim as optim
 import torch
 import torch.nn.functional as F
 import numpy as np
 from random import sample
 
-# from keras.layers import Dense
-# from keras.models import Sequential
-# from keras.optimizers import Adam
-# from keras.losses import binary_crossentropy
+from keras.layers import Dense
+from keras.models import Sequential
+from keras.optimizers import Adam
 
 
-def get_discriminator(inp_dim, out_dim=1, hid_dim=64, n_hid_layers=2):
+def get_discriminator(inp_dim, out_dim=1, hid_dim=32, n_hid_layers=1, bayes=False):
     """
     Feed-forward Neural Network constructor
     :param inp_dim: number of input dimensions
@@ -21,28 +19,157 @@ def get_discriminator(inp_dim, out_dim=1, hid_dim=64, n_hid_layers=2):
 
     :return: specified neural network
     """
-    s = nn.Sequential()
-    s.add_module('i', nn.Linear(inp_dim, hid_dim))
-    s.add_module('ai', nn.ReLU())
-    for i in range(n_hid_layers):
-        s.add_module(str(i), nn.Linear(hid_dim, hid_dim))
-        s.add_module('a' + str(i), nn.ReLU())
-    s.add_module('o', nn.Linear(hid_dim, out_dim))
-    s.add_module('ao', nn.Sigmoid())
-    # s.add_module('ao', nn.Softmax(out_dim)) # for multi-classification
-    return s
+
+    class Net(nn.Module):
+        def __init__(self, inp_dim, out_dim=1, hid_dim=32, n_hid_layers=1, bayes=False):
+            super(Net, self).__init__()
+            self.bayes = bayes
+            self.n_hid_layers = n_hid_layers
+
+            self.inp = nn.Linear(inp_dim, hid_dim)
+            if self.n_hid_layers > 0:
+                self.hid = nn.Sequential()
+                for i in range(n_hid_layers):
+                    self.hid.add_module(str(i), nn.Linear(hid_dim, hid_dim))
+                    self.hid.add_module('a' + str(i), nn.ReLU())
+
+            if self.bayes:
+                self.out_mean = nn.Linear(hid_dim, out_dim)
+                self.out_logvar = nn.Linear(hid_dim, out_dim)
+            else:
+                self.out = nn.Linear(hid_dim, out_dim)
+
+        def forward(self, x, return_params=False, sample_noise=False):
+            x = F.relu(self.inp(x))
+            if self.n_hid_layers > 0:
+                x = self.hid(x)
+
+            if self.bayes:
+                mean, logvar = self.out_mean(x), self.out_logvar(x)
+                var = torch.exp(logvar * .5)
+                if sample_noise:
+                    x = mean + var * torch.randn_like(var)
+                else:
+                    x = mean
+            else:
+                mean = self.out(x)
+                var = torch.zeros_like(mean) + 1e-3
+                x = mean
+            p = F.sigmoid(x)
+
+            if return_params:
+                return p, mean, var
+            else:
+                return p
+
+    return Net(inp_dim, out_dim, hid_dim, n_hid_layers, bayes)
+
+
+def all_convolution(inp_dim=(32, 32, 3), out_dim=1, hid_dim_full=128):
+
+    class Net(nn.Module):
+        def __init__(self, inp_dim=(32, 32, 3), out_dim=1, hid_dim_full=128):
+            super(Net, self).__init__()
+            # self.conv1 = nn.Conv2d(3, 96, 3, padding=1)
+            # self.conv2 = nn.Conv2d(96, 96, 3, padding=1)
+            # self.conv3 = nn.Conv2d(96, 96, 3, padding=1, stride=2)
+            # self.conv4 = nn.Conv2d(96, 192, 3, padding=1)
+            # self.conv5 = nn.Conv2d(192, 192, 3, padding=1)
+            # self.conv6 = nn.Conv2d(192, 192, 3, padding=1, stride=2)
+            # self.conv7 = nn.Conv2d(192, 192, 3, padding=1)
+            # self.conv8 = nn.Conv2d(192, 192, 1)
+            # self.conv9 = nn.Conv2d(192, 10, 1)
+
+            self.conv1 = nn.Conv2d(3, 16, 5, padding=2)
+            # self.bn1 = nn.BatchNorm2d(32)
+            self.conv2 = nn.Conv2d(16, 16, 3, padding=1, stride=2)
+            # self.bn2 = nn.BatchNorm2d(32)
+            self.conv3 = nn.Conv2d(16, 32, 5, padding=2)
+            # self.bn3 = nn.BatchNorm2d(64)
+            self.conv4 = nn.Conv2d(32, 32, 3, padding=1, stride=2)
+            # self.bn4 = nn.BatchNorm2d(64)
+            self.conv5 = nn.Conv2d(32, 32, 1)
+            # self.bn5 = nn.BatchNorm2d(64)
+            self.conv6 = nn.Conv2d(32, 4, 1)
+            # self.bn6 = nn.BatchNorm2d(8)
+
+            self.conv_to_fc = 8*8*4
+            self.fc1 = nn.Linear(self.conv_to_fc, hid_dim_full)
+            self.fc2 = nn.Linear(hid_dim_full, out_dim)
+
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = F.relu(self.conv3(x))
+            x = F.relu(self.conv4(x))
+            x = F.relu(self.conv5(x))
+            x = F.relu(self.conv6(x))
+
+            # x = self.bn1(F.relu(self.conv1(x)))
+            # x = self.bn2(F.relu(self.conv2(x)))
+            # x = self.bn3(F.relu(self.conv3(x)))
+            # x = self.bn4(F.relu(self.conv4(x)))
+            # x = self.bn5(F.relu(self.conv5(x)))
+            # x = self.bn6(F.relu(self.conv6(x)))
+
+            # x = F.relu(self.conv7(x))
+            # x = F.relu(self.conv8(x))
+            # x = F.relu(self.conv9(x))
+            x = x.view(-1, self.conv_to_fc)
+            x = F.relu(self.fc1(x))
+            x = F.sigmoid(self.fc2(x))
+            return x
+
+    # class Net(nn.Module):
+    #     def __init__(self):
+    #         super(Net, self).__init__()
+    #         self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
+    #         self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
+    #         self.conv2_drop = nn.Dropout2d()
+    #         self.fc1 = nn.Linear(320, 50)
+    #         self.fc2 = nn.Linear(50, 1)
+    #
+    #     def forward(self, x):
+    #         x = F.relu(F.max_pool2d(self.conv1(x), 2))
+    #         x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
+    #         x = x.view(-1, 320)
+    #         x = F.relu(self.fc1(x))
+    #         x = F.dropout(x, training=self.training)
+    #         x = self.fc2(x)
+    #         return F.sigmoid(x)
+    # return Net()
+
+    return Net(inp_dim, out_dim, hid_dim_full)
 
 
 def d_loss_standard(batch_mix, batch_pos, discriminator, loss_function=None):
     d_mix = discriminator(batch_mix)
     d_pos = discriminator(batch_pos)
     if (loss_function is None) or (loss_function == 'log'):
-        loss_function = lambda x: torch.log(x + 10 ** -5) # log loss
+        loss_function = lambda x: torch.log(x + 10 ** -5)  # log loss
     elif loss_function == 'sigmoid':
         loss_function = lambda x: x  # sigmoid loss
     elif loss_function == 'brier':
-        loss_function = lambda x: x ** 2 # brier loss
+        loss_function = lambda x: x ** 2  # brier loss
     return -(torch.mean(loss_function(1 - d_pos)) + torch.mean(loss_function(d_mix))) / 2
+
+
+def KL_normal(m, s):
+    return (torch.log(1 / (s + 1e-6)) + (m ** 2 + s ** 2 - 1) * .5).mean()
+
+
+def d_loss_bayes(batch_mix, batch_pos, discriminator, loss_function=None, w=0.1):
+    d_mix, mean_mix, std_mix = discriminator(batch_mix, return_params=True, sample_noise=True)
+    d_pos, mean_pos, std_pos = discriminator(batch_pos, return_params=True, sample_noise=True)
+    if (loss_function is None) or (loss_function == 'log'):
+        loss_function = lambda x: torch.log(x + 10 ** -5)  # log loss
+    elif loss_function == 'sigmoid':
+        loss_function = lambda x: x  # sigmoid loss
+    elif loss_function == 'brier':
+        loss_function = lambda x: x ** 2  # brier loss
+    loss = -(torch.mean(loss_function(1 - d_pos)) + torch.mean(loss_function(d_mix))) / 2
+    loss += (KL_normal(mean_mix, std_mix) + KL_normal(mean_pos, std_pos)) / 2 * w
+    return loss
 
 
 def d_loss_nnRE(batch_mix, batch_pos, discriminator, alpha, beta=0., gamma=1., loss_function=None):
@@ -66,23 +193,24 @@ def d_loss_nnRE(batch_mix, batch_pos, discriminator, alpha, beta=0., gamma=1., l
 
 
 def train_NN(mix_data, pos_data, discriminator, d_optimizer, mix_data_test=None, pos_data_test=None,
-             batch_size=64, n_epochs=200, n_batches=15, n_early_stop=5,
+             batch_size=None, n_epochs=200, n_batches=20, n_early_stop=5,
              d_scheduler=None, training_mode='standard', disp=False, loss_function=None, nnre_alpha=None,
-             metric=None, stop_by_metric=False):
+             metric=None, stop_by_metric=False, bayes=False, bayes_weight=1e-5):
     """
     Train discriminator to classify mix_data from pos_data.
     """
     d_losses_train = []
     d_losses_test = []
     d_metrics_test = []
-    batch_size_mix = int(batch_size * mix_data.shape[0] / (pos_data.shape[0] + mix_data.shape[0]))
-    batch_size_pos = int(batch_size * pos_data.shape[0] / (pos_data.shape[0] + mix_data.shape[0]))
-    data_test = np.concatenate((pos_data_test, mix_data_test))
-    target_test = np.concatenate((np.zeros((pos_data_test.shape[0],)), np.ones((mix_data_test.shape[0],))))
+    batch_size_mix = int(mix_data.shape[0] / n_batches)
+    batch_size_pos = int(pos_data.shape[0] / n_batches)
+    if mix_data_test is not None:
+        data_test = np.concatenate((pos_data_test, mix_data_test))
+        target_test = np.concatenate((np.zeros((pos_data_test.shape[0],)), np.ones((mix_data_test.shape[0],))))
     for epoch in range(n_epochs):
         d_losses_cur = []
         if d_scheduler is not None:
-            d_sheduler.step()
+            d_scheduler.step()
 
         for i in range(n_batches):
 
@@ -98,12 +226,15 @@ def train_NN(mix_data, pos_data, discriminator, d_optimizer, mix_data_test=None,
             d_optimizer.zero_grad()
 
             if training_mode == 'standard':
-                loss = d_loss_standard(batch_mix, batch_pos, discriminator, loss_function=loss_function)
+                if bayes:
+                    loss = d_loss_bayes(batch_mix, batch_pos, discriminator, loss_function, bayes_weight)
+                else:
+                    loss = d_loss_standard(batch_mix, batch_pos, discriminator, loss_function)
                 loss.backward()
                 d_optimizer.step()
 
             elif training_mode == 'nnre':
-                loss, gamma = d_loss_nnRE(batch_mix, batch_pos, discriminator, nnre_alpha, beta=0.1, gamma=0.9, loss_function=loss_function)
+                loss, gamma = d_loss_nnRE(batch_mix, batch_pos, discriminator, nnre_alpha, beta=0, gamma=1, loss_function=loss_function)
 
                 for param_group in d_optimizer.param_groups:
                     param_group['lr'] *= gamma
@@ -119,9 +250,18 @@ def train_NN(mix_data, pos_data, discriminator, d_optimizer, mix_data_test=None,
 
         if mix_data_test is not None and pos_data_test is not None:
             if training_mode == 'standard':
-                d_losses_test.append(round(d_loss_standard(torch.as_tensor(mix_data_test, dtype=torch.float32),
-                                                           torch.as_tensor(pos_data_test, dtype=torch.float32),
-                                                           discriminator).item(), 5))
+                if bayes:
+                    loss = d_loss_bayes(batch_mix, batch_pos, discriminator, loss_function, bayes_weight)
+                else:
+                    loss = d_loss_standard(batch_mix, batch_pos, discriminator, loss_function)
+                if bayes:
+                    d_losses_test.append(round(d_loss_bayes(torch.as_tensor(mix_data_test, dtype=torch.float32),
+                                                            torch.as_tensor(pos_data_test, dtype=torch.float32),
+                                                            discriminator, w=bayes_weight).item(), 5))
+                else:
+                    d_losses_test.append(round(d_loss_standard(torch.as_tensor(mix_data_test, dtype=torch.float32),
+                                                               torch.as_tensor(pos_data_test, dtype=torch.float32),
+                                                               discriminator).item(), 5))
             elif training_mode == 'nnre':
                 d_losses_test.append(round(d_loss_nnRE(torch.as_tensor(mix_data_test, dtype=torch.float32),
                                                        torch.as_tensor(pos_data_test, dtype=torch.float32),
@@ -156,30 +296,10 @@ def train_NN(mix_data, pos_data, discriminator, d_optimizer, mix_data_test=None,
     return d_losses_train, d_losses_test
 
 
-# def init_keras_model(n_layers=1, n_hid=32, lr=10**-5):
-#     clf = Sequential()
-#     for _ in range(n_layers):
-#         clf.add(Dense(n_hid, activation='relu'))
-#     clf.add(Dense(1, activation='sigmoid'))
-#     clf.compile(optimizer=Adam(lr=lr), loss=binary_crossentropy, metrics=['acc'])
-#     return clf
-#
-#
-# def shuffle_weights(model, weights=None):
-#     """Randomly permute the weights in `model`, or the given `weights`.
-#
-#     This is a fast approximation of re-initializing the weights of a model.
-#
-#     Assumes weights are distributed independently of the dimensions of the weight tensors
-#       (i.e., the weights have the same distribution along each dimension).
-#
-#     :param Model model: Modify the weights of the given model.
-#     :param list(ndarray) weights: The model's weights will be replaced by a random permutation of these weights.
-#       If `None`, permute the model's current weights.
-#     """
-#     if weights is None:
-#         weights = model.get_weights()
-#     weights = [np.random.permutation(w.flat).reshape(w.shape) for w in weights]
-#     # Faster, but less random: only permutes along the first dimension
-#     # weights = [np.random.permutation(w) for w in weights]
-#     model.set_weights(weights)
+def init_keras_model(n_layers=1, n_hid=32, lr=10**-5):
+    clf = Sequential()
+    for _ in range(n_layers):
+        clf.add(Dense(n_hid, activation='relu'))
+    clf.add(Dense(1, activation='sigmoid'))
+    clf.compile(optimizer=Adam(lr=lr), loss='binary_crossentropy', metrics=['acc'])
+    return clf
