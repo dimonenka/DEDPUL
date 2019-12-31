@@ -509,7 +509,7 @@ def estimate_poster_cv(df, target, estimator='dedpul', bayes=False, alpha=None, 
         estimate_preds_cv_options = dict()
 
     # preds = estimate_preds_cv_catboost(df, target, **estimate_preds_cv_options)
-
+    ### uncomment the line above and comment the line below for experiments with catboost instead of neural networks
     preds = estimate_preds_cv(df=df, target=target, alpha=alpha, training_mode=training_mode, bayes=bayes,
                               train_nn_options=train_nn_options, **estimate_preds_cv_options)
     if bayes:
