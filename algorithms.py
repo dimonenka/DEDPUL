@@ -14,11 +14,12 @@ from catboost import CatBoostClassifier
 
 from NN_functions import get_discriminator, all_convolution, init_keras_model, train_NN
 from utils import GaussianMixtureNoFit, maximize_log_likelihood, rolling_apply, MonotonizingTrends
+from TIcE import tice_wrapper
 
 
 def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=1e-4, hid_dim=32, n_hid_layers=1,
-                      random_state=None, training_mode='standard', alpha=None, train_nn_options=None,
-                      all_conv=False, bayes=False):
+                      random_state=None, training_mode='standard', alpha=None, l2=1e-4, train_nn_options=None,
+                      all_conv=False, bayes=False, bn=True):
     """
     Estimates posterior probability y(x) of belonging to U rather than P (ignoring relative sizes of U and P);
         predictions are the average of an ensemble of n_networks neural networks;
@@ -58,10 +59,10 @@ def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=1e-4, hid_dim=32, n_hid
             pos_data_test = test_data[test_target == 0]
             if not all_conv:
                 discriminator = get_discriminator(inp_dim=df.shape[1], out_dim=1, hid_dim=hid_dim,
-                                                  n_hid_layers=n_hid_layers, bayes=bayes)
+                                                  n_hid_layers=n_hid_layers, bayes=bayes, bn=bn)
             else:
-                discriminator = all_convolution(hid_dim_full=hid_dim, bayes=bayes)
-            d_optimizer = optim.Adam(discriminator.parameters(), lr=lr)#, weight_decay=10**-5)
+                discriminator = all_convolution(hid_dim_full=hid_dim, bayes=bayes, bn=bn)
+            d_optimizer = optim.Adam(discriminator.parameters(), lr=lr, weight_decay=l2)
 
             train_NN(mix_data, pos_data, discriminator, d_optimizer,
                      mix_data_test, pos_data_test, nnre_alpha=alpha,
@@ -75,8 +76,6 @@ def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=1e-4, hid_dim=32, n_hid
                 preds[i, test_index] = discriminator(
                     torch.as_tensor(test_data, dtype=torch.float32)).detach().numpy().flatten()
 
-        if random_state is not None:
-            random_state += 1
     preds = preds.mean(axis=0)
     if bayes:
         means, variances = means.mean(axis=0), variances.mean(axis=0)
@@ -106,7 +105,7 @@ def estimate_preds_cv_keras(data, target, n_networks=1, n_layers=1, n_hid=32, lr
 
 
 def estimate_preds_cv_catboost(data, target, random_state=None, n_networks=1, catboost_params=None,
-                               cv=3, n_early_stop=10, alpha=None, verbose=False):
+                               cv=3, n_early_stop=10, verbose=False):
     if catboost_params is None:
         catboost_params = {}
     preds = np.zeros((n_networks, data.shape[0]))
@@ -148,7 +147,7 @@ def estimate_preds_cv_sklearn(data, target, model, random_state=None, n_networks
 
 def estimate_diff(preds, target, bw_mix=0.05, bw_pos=0.1, kde_mode='logit', threshold=None, k_neighbours=None,
                   tune=False, MT=True, MT_coef=0.2, decay_MT_coef=False, kde_type='kde',
-                  n_gauss_mix=2, n_gauss_pos=1, bins_mix=200, bins_pos=100):
+                  n_gauss_mix=20, n_gauss_pos=10, bins_mix=20, bins_pos=20):
     """
     Estimates densities of predictions y(x) for P and U and ratio between them f_p / f_u for U sample;
         uses kernel density estimation (kde);
@@ -276,7 +275,11 @@ def estimate_diff_bayes(means, variances, target, threshold=None, k_neighbours=N
     kde_pos = lambda x: np.exp(GMM_pos.score_samples(x))
 
     sorted_means = np.sort(means[target == 1])
-    diff = np.array(kde_pos(sorted_means.reshape(-1, 1)) / kde_mix(sorted_means.reshape(-1, 1)))
+    # diff = np.array(kde_pos(sorted_means.reshape(-1, 1)) / kde_mix(sorted_means.reshape(-1, 1)))
+    diff = np.array([])
+    for i in range(int(len(sorted_means) // 1000)):
+        current = sorted_means[i * 1000: min((i + 1) * 1000, len(sorted_means))]
+        diff = np.append(diff, kde_pos(current.reshape(-1, 1)) / kde_mix(current.reshape(-1, 1)))
     diff[diff > 50] = 50
 
     diff = rolling_apply(diff, k_neighbours)
@@ -505,6 +508,8 @@ def estimate_poster_cv(df, target, estimator='dedpul', bayes=False, alpha=None, 
     if estimate_preds_cv_options is None:
         estimate_preds_cv_options = dict()
 
+    # preds = estimate_preds_cv_catboost(df, target, **estimate_preds_cv_options)
+
     preds = estimate_preds_cv(df=df, target=target, alpha=alpha, training_mode=training_mode, bayes=bayes,
                               train_nn_options=train_nn_options, **estimate_preds_cv_options)
     if bayes:
@@ -514,7 +519,7 @@ def estimate_poster_cv(df, target, estimator='dedpul', bayes=False, alpha=None, 
             diff = estimate_diff_bayes(means, variances, target, **estimate_diff_options)
         else:
             diff = estimate_diff(preds, target, **estimate_diff_options)
-            
+
     if estimator == 'dedpul':
         alpha, poster = estimate_poster_em(diff=diff, mode='dedpul', alpha=alpha, **estimate_poster_options)
 
@@ -543,6 +548,7 @@ def estimate_poster_cv(df, target, estimator='dedpul', bayes=False, alpha=None, 
         res['e1_en_poster'] = estimate_poster_en(preds, target, alpha=alpha, estimator='e1', **estimate_poster_options)
         res['e3_en_poster'] = estimate_poster_en(preds, target, alpha=alpha, estimator='e3', **estimate_poster_options)
         res['em_en_poster'] = estimate_poster_em(preds=preds, target=target, mode='en', alpha=alpha, **estimate_poster_options)
+
         return res
 
     return alpha, poster

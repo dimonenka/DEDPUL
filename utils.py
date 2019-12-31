@@ -14,7 +14,21 @@ class GaussianMixtureNoFit(GaussianMixture):
                  reg_covar=1e-6, max_iter=100, n_init=1, init_params='kmeans',
                  weights_init=None, means_init=None, precisions_init=None,
                  random_state=None, warm_start=False,
-                 verbose=0, verbose_interval=10):
+                 verbose=0, verbose_interval=10, max_components=None):
+
+        self.max_components = max_components
+
+        idx = np.arange(means_init.shape[0])
+        if (max_components is not None) and (means_init.shape[0] > max_components):
+            n_components = min(n_components, max_components)
+            np.random.shuffle(idx)
+            idx = idx[:self.max_components]
+
+        weights_init = weights_init[idx]
+        weights_init /= weights_init.sum()
+        means_init = means_init[idx]
+        precisions_init = precisions_init[idx]
+
         super().__init__(n_components, covariance_type, tol,
                          reg_covar, max_iter, n_init, init_params,
                          weights_init, means_init, precisions_init,
@@ -27,7 +41,7 @@ class GaussianMixtureNoFit(GaussianMixture):
         self.weights_ = weights_init
         self.means_ = means_init
         self.precisions_ = precisions_init
-        self.precisions_cholesky_ = self.precisions_init
+        self.precisions_cholesky_ = self.precisions
         self.covariances_ = 1 / (self.precisions ** 2)
         self.covariances = 1 / (self.precisions ** 2)
 
@@ -36,6 +50,10 @@ class GaussianMixtureNoFit(GaussianMixture):
 
     def _m_step(self, X, log_resp):
         pass
+
+    def fit(self, X, y=None):
+        pass
+        return self
 
 
 def loguniform(low=0, high=1, size=None):
@@ -345,3 +363,14 @@ def roc_auc_loss(y_true, y_score, average='macro', sample_weight=None, max_fpr=N
 
 def accuracy_loss(y_true, y_pred, normalize=True, sample_weight=None):
     return -accuracy_score(y_true, y_pred.round().astype(int), normalize, sample_weight)
+
+
+def clean_columns_poster(df):
+    df = df.copy()
+    cols = df.columns
+    for col in cols:
+        if '_poster' in col:
+            new_col = col.replace('_poster', '')
+            df.drop(columns=[new_col], inplace=True)
+            df.rename(columns={col: new_col}, inplace=True)
+    return df

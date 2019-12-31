@@ -2,6 +2,8 @@
 """
 DO MIXTURE PROPORTION ESTIMATION 
 Using gradient thresholding of the $\C_S$-distance
+taken from
+http://web.eecs.umich.edu/~cscott/code.html#kmpe
 """
 from cvxopt import matrix, solvers, spmatrix
 from math import sqrt
