@@ -41,9 +41,9 @@ class GaussianMixtureNoFit(GaussianMixture):
         self.weights_ = weights_init
         self.means_ = means_init
         self.precisions_ = precisions_init
-        self.precisions_cholesky_ = self.precisions
-        self.covariances_ = 1 / (self.precisions ** 2)
-        self.covariances = 1 / (self.precisions ** 2)
+        self.precisions_cholesky_ = np.sqrt(precisions_init)
+        self.covariances_ = 1 / precisions_init
+        self.covariances = 1 / precisions_init
 
     def _initialize(self, X, resp):
         pass

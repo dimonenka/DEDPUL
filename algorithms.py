@@ -262,7 +262,7 @@ def estimate_diff_bayes(means, variances, target, threshold=None, k_neighbours=N
     GMM_mix = GaussianMixtureNoFit(n_mix, covariance_type='spherical', max_iter=1, n_init=1,
                                    weights_init=np.ones(n_mix) / n_mix,
                                    means_init=means[target == 1].reshape(-1, 1),
-                                   precisions_init=1 / np.sqrt(variances[target == 1])).fit(
+                                   precisions_init=1 / variances[target == 1]).fit(
         means[target == 1].reshape(-1, 1))
     kde_mix = lambda x: np.exp(GMM_mix.score_samples(x))
 
@@ -270,7 +270,7 @@ def estimate_diff_bayes(means, variances, target, threshold=None, k_neighbours=N
     GMM_pos = GaussianMixtureNoFit(n_pos, covariance_type='spherical', max_iter=1, n_init=1,
                                    weights_init=np.ones(n_pos) / n_pos,
                                    means_init=means[target == 0].reshape(-1, 1),
-                                   precisions_init=1 / np.sqrt(variances[target == 0])).fit(
+                                   precisions_init=1 / variances[target == 0]).fit(
         means[target == 0].reshape(-1, 1))
     kde_pos = lambda x: np.exp(GMM_pos.score_samples(x))
 
