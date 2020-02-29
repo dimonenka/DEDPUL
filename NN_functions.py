@@ -157,15 +157,15 @@ def d_loss_standard(batch_mix, batch_pos, discriminator, loss_function=None):
     return -(torch.mean(loss_function(1 - d_pos)) + torch.mean(loss_function(d_mix))) / 2
 
 
-def KL_normal(m, s):
-    return (torch.log(1 / (s + 1e-6)) + (m ** 2 + s ** 2 - 1) * .5).mean()
+def KL_normal(m, v):
+    return (torch.log(1 / (v.sqrt() + 1e-6)) + (m ** 2 + v - 1) * .5).mean()
 
 
-def d_loss_bayes(batch_mix, batch_pos, discriminator, loss_function=None, w=0.1):
+def d_loss_bayes(batch_mix, batch_pos, discriminator, loss_function=None, w=1e-4):
     n_mix = batch_mix.shape[0]
-    preds, means, std = discriminator(torch.cat([batch_mix, batch_pos]), return_params=True, sample_noise=True)
-    d_mix, d_pos, mean_mix, mean_pos, std_mix, std_pos = preds[:n_mix], preds[n_mix:], means[:n_mix], means[n_mix:], \
-                                                         std[:n_mix], std[n_mix:]
+    preds, means, var = discriminator(torch.cat([batch_mix, batch_pos]), return_params=True, sample_noise=True)
+    d_mix, d_pos, mean_mix, mean_pos, var_mix, var_pos = preds[:n_mix], preds[n_mix:], means[:n_mix], means[n_mix:], \
+                                                         var[:n_mix], var[n_mix:]
     if (loss_function is None) or (loss_function == 'log'):
         loss_function = lambda x: torch.log(x + 10 ** -5)  # log loss
     elif loss_function == 'sigmoid':
@@ -173,7 +173,7 @@ def d_loss_bayes(batch_mix, batch_pos, discriminator, loss_function=None, w=0.1)
     elif loss_function == 'brier':
         loss_function = lambda x: x ** 2  # brier loss
     loss = -(torch.mean(loss_function(1 - d_pos)) + torch.mean(loss_function(d_mix))) / 2
-    loss += (KL_normal(mean_mix, std_mix) + KL_normal(mean_pos, std_pos)) / 2 * w
+    loss += (KL_normal(mean_mix, var_mix) + KL_normal(mean_pos, var_pos)) / 2 * w
     return loss
 
 
