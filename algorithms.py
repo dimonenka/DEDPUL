@@ -277,7 +277,7 @@ def estimate_diff_bayes(means, variances, target, threshold=None, k_neighbours=N
     sorted_means = np.sort(means[target == 1])
     # diff = np.array(kde_pos(sorted_means.reshape(-1, 1)) / kde_mix(sorted_means.reshape(-1, 1)))
     diff = np.array([])
-    for i in range(int(len(sorted_means) // 1000)):
+    for i in range(int(np.ceil(len(sorted_means) / 1000))):
         current = sorted_means[i * 1000: min((i + 1) * 1000, len(sorted_means))]
         diff = np.append(diff, kde_pos(current.reshape(-1, 1)) / kde_mix(current.reshape(-1, 1)))
     diff[diff > 50] = 50
