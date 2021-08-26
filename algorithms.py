@@ -8,13 +8,12 @@ from sklearn.model_selection import StratifiedKFold
 from pandas import Series, DataFrame
 import torch
 
-from keras.callbacks import EarlyStopping
+# from tensorflow.keras.callbacks import EarlyStopping
 
 from catboost import CatBoostClassifier
 
-from NN_functions import get_discriminator, all_convolution, init_keras_model, train_NN
+from NN_functions import get_discriminator, all_convolution, train_NN  #, init_keras_model
 from utils import GaussianMixtureNoFit, maximize_log_likelihood, rolling_apply, MonotonizingTrends
-from TIcE import tice_wrapper
 
 
 def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=1e-4, hid_dim=32, n_hid_layers=1,
@@ -84,24 +83,24 @@ def estimate_preds_cv(df, target, cv=3, n_networks=1, lr=1e-4, hid_dim=32, n_hid
         return preds
 
 
-def estimate_preds_cv_keras(data, target, n_networks=1, n_layers=1, n_hid=32, lr=10**-5, random_state=42,
-                            cv=3, batch_size=128, n_epochs=500, n_early_stop=10, alpha=None, verbose=False):
-    es = EarlyStopping(monitor='val_loss', patience=n_early_stop, verbose=0, restore_best_weights=True)
-    preds = np.zeros((n_networks, data.shape[0]))
-    for i in range(n_networks):
-        kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
-        for train_idx, test_idx in kf.split(data, target):
-            clf = init_keras_model(n_layers=n_layers, n_hid=n_hid, lr=lr)
-            clf.fit(data[train_idx], target[train_idx],
-                    validation_data=(data[test_idx], target[test_idx]),
-                    # class_weight={0: target.mean(), 1: 1 - target.mean()},
-                    batch_size=batch_size, epochs=n_epochs, callbacks=[es], verbose=verbose)
-            preds[i, test_idx] = clf.predict_proba(data[test_idx]).reshape(-1,)
-        if random_state is not None:
-            random_state += 1
-    preds = preds.mean(axis=0)
-    # preds = np.median(preds, axis=0)
-    return preds
+# def estimate_preds_cv_keras(data, target, n_networks=1, n_layers=1, n_hid=32, lr=10**-5, random_state=42,
+#                             cv=3, batch_size=128, n_epochs=500, n_early_stop=10, alpha=None, verbose=False):
+#     es = EarlyStopping(monitor='val_loss', patience=n_early_stop, verbose=0, restore_best_weights=True)
+#     preds = np.zeros((n_networks, data.shape[0]))
+#     for i in range(n_networks):
+#         kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+#         for train_idx, test_idx in kf.split(data, target):
+#             clf = init_keras_model(n_layers=n_layers, n_hid=n_hid, lr=lr)
+#             clf.fit(data[train_idx], target[train_idx],
+#                     validation_data=(data[test_idx], target[test_idx]),
+#                     # class_weight={0: target.mean(), 1: 1 - target.mean()},
+#                     batch_size=batch_size, epochs=n_epochs, callbacks=[es], verbose=verbose)
+#             preds[i, test_idx] = clf.predict_proba(data[test_idx]).reshape(-1,)
+#         if random_state is not None:
+#             random_state += 1
+#     preds = preds.mean(axis=0)
+#     # preds = np.median(preds, axis=0)
+#     return preds
 
 
 def estimate_preds_cv_catboost(data, target, random_state=None, n_networks=1, catboost_params=None,

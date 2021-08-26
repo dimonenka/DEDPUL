@@ -4,9 +4,9 @@ import torch.nn.functional as F
 import numpy as np
 from random import sample
 
-from keras.layers import Dense
-from keras.models import Sequential
-from keras.optimizers import Adam
+# from tensorflow.keras.layers import Dense
+# from tensorflow.keras.models import Sequential
+# from tensorflow.keras.optimizers import Adam
 
 
 def get_discriminator(inp_dim, out_dim=1, hid_dim=32, n_hid_layers=1, bayes=False, bn=True):
@@ -299,10 +299,10 @@ def train_NN(mix_data, pos_data, discriminator, d_optimizer, mix_data_test=None,
     return d_losses_train, d_losses_test
 
 
-def init_keras_model(n_layers=1, n_hid=32, lr=10**-5):
-    clf = Sequential()
-    for _ in range(n_layers):
-        clf.add(Dense(n_hid, activation='relu'))
-    clf.add(Dense(1, activation='sigmoid'))
-    clf.compile(optimizer=Adam(lr=lr), loss='binary_crossentropy', metrics=['acc'])
-    return clf
+# def init_keras_model(n_layers=1, n_hid=32, lr=10**-5):
+#     clf = Sequential()
+#     for _ in range(n_layers):
+#         clf.add(Dense(n_hid, activation='relu'))
+#     clf.add(Dense(1, activation='sigmoid'))
+#     clf.compile(optimizer=Adam(lr=lr), loss='binary_crossentropy', metrics=['acc'])
+#     return clf
